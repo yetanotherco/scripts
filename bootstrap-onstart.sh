@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Vast.ai provisioning script for lambda_vm work.
 # Idempotent — safe to re-run.
 #
