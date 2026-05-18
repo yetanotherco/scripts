@@ -21,7 +21,28 @@ set -euo pipefail
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
-# --- 1. apt deps -------------------------------------------------------------
+# --- 1. authorized_keys --------
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+AUTHORIZED_KEYS=(
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFzvQKhE/xqRxHbit/dZNej7T5eVLmF8CAGL7to6o3QY joaquin@mail.com"
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA2GAeixuqP4XwujuSK9KDgdmyglGzlQQsXztnve+bra gabriel@mail.com"
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKQnPPUb4gzmsmjDP98mNKXbpHrp9bIIL7QiRjyWEG6f julian@mail.com"
+)
+AUTH_FILE="$HOME/.ssh/authorized_keys"
+touch "$AUTH_FILE"
+chmod 600 "$AUTH_FILE"
+if [ -s "$AUTH_FILE" ] && [ -n "$(tail -c 1 "$AUTH_FILE")" ]; then
+  printf '\n' >> "$AUTH_FILE"
+fi
+for key in "${AUTHORIZED_KEYS[@]}"; do
+  if ! grep -qxF "$key" "$AUTH_FILE"; then
+    printf '%s\n' "$key" >> "$AUTH_FILE"
+    log "added authorized key: ${key##* }"
+  fi
+done
+
+# --- 2. apt deps -------------------------------------------------------------
 log "apt deps (clang, lld, build tools, curl, git)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
@@ -30,7 +51,7 @@ apt-get install -y --no-install-recommends \
   clang lld llvm \
   curl git ca-certificates xz-utils
 
-# --- 2. Rust 1.94.0 + nightly-2026-02-01 -------------------------------------
+# --- 3. Rust 1.94.0 + nightly-2026-02-01 -------------------------------------
 if ! command -v rustup >/dev/null 2>&1; then
   log "installing rustup + 1.94.0"
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -43,7 +64,24 @@ grep -q 'cargo/env' "$HOME/.bashrc" 2>/dev/null \
 log "ensuring nightly-2026-02-01 with rust-src (for build-std)"
 rustup toolchain install nightly-2026-02-01 --profile minimal --component rust-src
 
-# --- 3. Claude Code ----------------------------------------------------------
+log "ensuring rust-analyzer component on default toolchain"
+rustup component add rust-analyzer
+
+# --- 4. GitHub CLI -----------------------------------------------------------
+if ! command -v gh >/dev/null 2>&1; then
+  log "installing gh (GitHub CLI)"
+  (type -p wget >/dev/null || (apt-get update && apt-get install wget -y)) \
+    && mkdir -p -m 755 /etc/apt/keyrings \
+    && out=$(mktemp) && wget -nv -O"$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    && cat "$out" | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && mkdir -p -m 755 /etc/apt/sources.list.d \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install gh -y
+fi
+
+# --- 5. Claude Code ----------------------------------------------------------
 export PATH="$HOME/.local/bin:$PATH"
 if ! command -v claude >/dev/null 2>&1; then
   log "installing Claude Code"
@@ -53,7 +91,7 @@ PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 grep -qxF "$PATH_LINE" "$HOME/.bashrc" 2>/dev/null \
   || printf '%s\n' "$PATH_LINE" >> "$HOME/.bashrc"
 
-# --- 4. lambda-vm sysroot (rv64im) -------------------------------------------
+# --- 6. lambda-vm sysroot (rv64im) -------------------------------------------
 SYSROOT_DIR=/opt/lambda-vm-sysroot
 SYSROOT_URL=https://lambda.alignedlayer.com/lambda-vm-sysroot-rv64im.tar.gz
 if [ ! -d "$SYSROOT_DIR" ]; then
@@ -64,7 +102,7 @@ if [ ! -d "$SYSROOT_DIR" ]; then
   rm /tmp/sysroot.tar.gz
 fi
 
-# --- 5. ethrex test fixture --------------------------------------------------
+# --- 7. ethrex test fixture --------------------------------------------------
 ETHREX_FILE=/workspace/lambda_vm/executor/tests/ethrex_hoodi.bin
 ETHREX_URL=https://lambda.alignedlayer.com/ethrex_hoodi.bin
 if [ -d /workspace/lambda_vm/executor/tests ] && [ ! -f "$ETHREX_FILE" ]; then
@@ -72,13 +110,12 @@ if [ -d /workspace/lambda_vm/executor/tests ] && [ ! -f "$ETHREX_FILE" ]; then
   curl -L "$ETHREX_URL" -o "$ETHREX_FILE"
 fi
 
-# --- 6. SSH / repo setup -----------------------------------------------------
+# --- 8. SSH / repo setup -----------------------------------------------------
 GH_SSH_KEY_STORE=/workspace/vast_lambda_vm
 GH_SSH_KEY_LIVE="$HOME/.ssh/vast_lambda_vm"
-mkdir -p /workspace "$HOME/.ssh"
-chmod 700 "$HOME/.ssh"
+mkdir -p /workspace
 
-# 6a. Materialize the GitHub SSH private key from $GITHUB_SSH_KEY_B64 if the
+# 8a. Materialize the GitHub SSH private key from $GITHUB_SSH_KEY_B64 if the
 # file isn't already on disk (e.g. on first boot).
 if [ ! -f "$GH_SSH_KEY_STORE" ] && [ -n "${GITHUB_SSH_KEY_B64:-}" ]; then
   log "decoding GITHUB_SSH_KEY_B64 -> $GH_SSH_KEY_STORE"
@@ -86,7 +123,7 @@ if [ ! -f "$GH_SSH_KEY_STORE" ] && [ -n "${GITHUB_SSH_KEY_B64:-}" ]; then
   chmod 600 "$GH_SSH_KEY_STORE"
 fi
 
-# 6b. Symlink + ssh config + known_hosts for git@github.com.
+# 8b. Symlink + ssh config + known_hosts for git@github.com.
 if [ -f "$GH_SSH_KEY_STORE" ]; then
   chmod 600 "$GH_SSH_KEY_STORE"
   if [ ! -L "$GH_SSH_KEY_LIVE" ] || [ "$(readlink -f "$GH_SSH_KEY_LIVE")" != "$GH_SSH_KEY_STORE" ]; then
@@ -120,26 +157,7 @@ else
   log "no GitHub SSH key at $GH_SSH_KEY_STORE and \$GITHUB_SSH_KEY_B64 unset — skipping git@github.com setup"
 fi
 
-# 6c. authorized_keys — public keys allowed to SSH into this instance.
-AUTHORIZED_KEYS=(
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFzvQKhE/xqRxHbit/dZNej7T5eVLmF8CAGL7to6o3QY joaquin@mail.com"
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA2GAeixuqP4XwujuSK9KDgdmyglGzlQQsXztnve+bra gabriel@mail.com"
-  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKQnPPUb4gzmsmjDP98mNKXbpHrp9bIIL7QiRjyWEG6f julian@mail.com"
-)
-AUTH_FILE="$HOME/.ssh/authorized_keys"
-touch "$AUTH_FILE"
-chmod 600 "$AUTH_FILE"
-if [ -s "$AUTH_FILE" ] && [ -n "$(tail -c 1 "$AUTH_FILE")" ]; then
-  printf '\n' >> "$AUTH_FILE"
-fi
-for key in "${AUTHORIZED_KEYS[@]}"; do
-  if ! grep -qxF "$key" "$AUTH_FILE"; then
-    printf '%s\n' "$key" >> "$AUTH_FILE"
-    log "added authorized key: ${key##* }"
-  fi
-done
-
-# 6d. Clone lambda_vm if it isn't already on disk.
+# 8c. Clone lambda_vm if it isn't already on disk.
 REPO_DIR=/workspace/lambda_vm
 REPO_URL=git@github.com:yetanotherco/lambda_vm.git
 if [ ! -d "$REPO_DIR/.git" ] && [ -f "$GH_SSH_KEY_STORE" ]; then
@@ -147,7 +165,7 @@ if [ ! -d "$REPO_DIR/.git" ] && [ -f "$GH_SSH_KEY_STORE" ]; then
   git clone "$REPO_URL" "$REPO_DIR"
 fi
 
-# --- 7. cudarc feature pin for driver < 13.0 ---------------------------------
+# --- 9. cudarc feature pin for driver < 13.0 ---------------------------------
 CARGO_TOML=/workspace/lambda_vm/crypto/math-cuda/Cargo.toml
 if [ -f "$CARGO_TOML" ] && command -v nvidia-smi >/dev/null 2>&1; then
   DRV_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1)
