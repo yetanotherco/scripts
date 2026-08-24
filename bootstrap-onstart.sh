@@ -6,16 +6,11 @@
 # template's Environment Variables section, set:
 #
 #   PROVISIONING_SCRIPT=https://raw.githubusercontent.com/yetanotherco/scripts/main/bootstrap-onstart.sh
-#   GITHUB_SSH_KEY_B64=<single-line base64 of your GitHub-authorized private key>
 #
-# Generate the key value on your laptop with:
-#   base64 -i ~/.ssh/vast_lambda_vm | tr -d '\n' | pbcopy   # macOS
-#   base64 -w0 ~/.ssh/vast_lambda_vm                        # Linux (no wrap)
-#
-# Security note: env vars are stored in Vast instance metadata in plaintext and
-# are visible to any process on the instance via /proc/<pid>/environ. Don't put
-# long-lived high-privilege keys in here — prefer a fine-grained, expiring
-# deploy key.
+# No credentials are needed: lambda_vm is public and is cloned over HTTPS.
+# Never put keys or tokens in template env vars — they are stored in Vast
+# instance metadata in plaintext and visible to any process on the instance
+# via /proc/<pid>/environ.
 cd /workspace/
 set -euo pipefail
 
@@ -110,57 +105,12 @@ if [ -d /workspace/lambda_vm/executor/tests ] && [ ! -f "$ETHREX_FILE" ]; then
   curl -L "$ETHREX_URL" -o "$ETHREX_FILE"
 fi
 
-# --- 8. SSH / repo setup -----------------------------------------------------
-GH_SSH_KEY_STORE=/workspace/vast_lambda_vm
-GH_SSH_KEY_LIVE="$HOME/.ssh/vast_lambda_vm"
-mkdir -p /workspace
-
-# 8a. Materialize the GitHub SSH private key from $GITHUB_SSH_KEY_B64 if the
-# file isn't already on disk (e.g. on first boot).
-if [ ! -f "$GH_SSH_KEY_STORE" ] && [ -n "${GITHUB_SSH_KEY_B64:-}" ]; then
-  log "decoding GITHUB_SSH_KEY_B64 -> $GH_SSH_KEY_STORE"
-  printf '%s' "$GITHUB_SSH_KEY_B64" | base64 -d > "$GH_SSH_KEY_STORE"
-  chmod 600 "$GH_SSH_KEY_STORE"
-fi
-
-# 8b. Symlink + ssh config + known_hosts for git@github.com.
-if [ -f "$GH_SSH_KEY_STORE" ]; then
-  chmod 600 "$GH_SSH_KEY_STORE"
-  if [ ! -L "$GH_SSH_KEY_LIVE" ] || [ "$(readlink -f "$GH_SSH_KEY_LIVE")" != "$GH_SSH_KEY_STORE" ]; then
-    rm -f "$GH_SSH_KEY_LIVE"
-    ln -s "$GH_SSH_KEY_STORE" "$GH_SSH_KEY_LIVE"
-    log "GitHub SSH key symlinked: $GH_SSH_KEY_LIVE -> $GH_SSH_KEY_STORE"
-  fi
-
-  SSH_CONFIG="$HOME/.ssh/config"
-  touch "$SSH_CONFIG"
-  chmod 600 "$SSH_CONFIG"
-  if ! grep -q '^Host github.com' "$SSH_CONFIG" 2>/dev/null; then
-    cat >> "$SSH_CONFIG" <<EOF
-Host github.com
-  HostName github.com
-  User git
-  IdentityFile $GH_SSH_KEY_LIVE
-  IdentitiesOnly yes
-EOF
-    log "added github.com block to $SSH_CONFIG"
-  fi
-
-  KNOWN_HOSTS="$HOME/.ssh/known_hosts"
-  touch "$KNOWN_HOSTS"
-  chmod 600 "$KNOWN_HOSTS"
-  if ! ssh-keygen -F github.com -f "$KNOWN_HOSTS" >/dev/null 2>&1; then
-    ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> "$KNOWN_HOSTS" 2>/dev/null || true
-    log "added github.com to known_hosts"
-  fi
-else
-  log "no GitHub SSH key at $GH_SSH_KEY_STORE and \$GITHUB_SSH_KEY_B64 unset — skipping git@github.com setup"
-fi
-
-# 8c. Clone lambda_vm if it isn't already on disk.
+# --- 8. repo clone -----------------------------------------------------------
+# lambda_vm is public: plain HTTPS, no credentials on the box.
 REPO_DIR=/workspace/lambda_vm
-REPO_URL=git@github.com:yetanotherco/lambda_vm.git
-if [ ! -d "$REPO_DIR/.git" ] && [ -f "$GH_SSH_KEY_STORE" ]; then
+REPO_URL=https://github.com/yetanotherco/lambda_vm.git
+mkdir -p /workspace
+if [ ! -d "$REPO_DIR/.git" ]; then
   log "cloning lambda_vm to $REPO_DIR"
   git clone "$REPO_URL" "$REPO_DIR"
 fi
